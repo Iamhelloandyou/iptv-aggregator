@@ -1,0 +1,43 @@
+name: IPTV Source Refresh
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # 每小时执行
+  workflow_dispatch:      # 手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Collect and verify IPTV sources
+        run: |
+          python scripts/collect_sources.py
+        timeout-minutes: 10
+      
+      - name: Update timestamp
+        run: |
+          echo "Last updated: $(date '+%Y-%m-%d %H:%M:%S UTC')" > output/last_update.txt
+      
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add output/
+          git diff --cached --quiet || git commit -m "🔄 Auto refresh IPTV sources [$(date '+%Y-%m-%d %H:%M')]"
+          git push

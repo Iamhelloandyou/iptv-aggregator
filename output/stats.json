@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-03-15 18:43:42",
+  "timestamp": "2026-03-15 19:31:11",
   "total_sources_collected": 51,
   "channels_available": 1,
   "channels_target": 54,
@@ -60,7 +60,7 @@
   ],
   "channel_details": {
     "CCTV3": {
-      "best_latency_ms": 469,
+      "best_latency_ms": 556,
       "total_working_sources": 1
     }
   }

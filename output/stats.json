@@ -1,12 +1,11 @@
 {
-  "timestamp": "2026-03-15 11:57:54",
-  "total_sources_collected": 96,
-  "channels_available": 0,
-  "channels_target": 56,
+  "timestamp": "2026-03-15 12:34:11",
+  "total_sources_collected": 51,
+  "channels_available": 1,
+  "channels_target": 54,
   "channels_missing": [
     "CCTV1",
     "CCTV2",
-    "CCTV3",
     "CCTV4",
     "CCTV5",
     "CCTV5+",
@@ -55,11 +54,14 @@
     "宁夏卫视",
     "青海卫视",
     "三沙卫视",
-    "厦门卫视",
     "金鹰卡通",
     "卡酷少儿",
-    "炫动卡通",
     "优漫卡通"
   ],
-  "channel_details": {}
+  "channel_details": {
+    "CCTV3": {
+      "best_latency_ms": 80,
+      "total_working_sources": 1
+    }
+  }
 }

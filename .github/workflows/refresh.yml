@@ -11,26 +11,35 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    
+    timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
+      - name: Install dependencies
+        run: |
+          pip install aiohttp
+
       - name: Collect and verify IPTV sources
         run: |
           python scripts/collect_sources.py
-        timeout-minutes: 15
-        continue-on-error: false
-      
+        timeout-minutes: 8
+
+      - name: Ensure output dir exists
+        run: |
+          mkdir -p output
+          [ -f output/iptv.m3u ] || echo "#EXTM3U" > output/iptv.m3u
+          [ -f output/stats.json ] || echo '{"error":"no data"}' > output/stats.json
+
       - name: Update timestamp
         run: |
           echo "Last updated: $(date '+%Y-%m-%d %H:%M:%S UTC')" > output/last_update.txt
-      
+
       - name: Commit and push changes
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"

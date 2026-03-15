@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
 """
-IPTV源收集器 - 从多个公开源收集国内电视频道
-增强版：更多源、更长超时、更智能的验证
+IPTV源收集器 v2 - 异步高速收集、验证国内电视频道
 """
 import json
 import os
 import re
 import sys
 import time
-import socket
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.request import Request, urlopen
-from urllib.error import URLError
+import asyncio
+import aiohttp
 from datetime import datetime
 
 # ============================================
-# 频道映射 - 标准化频道名称
+# 频道映射
 # ============================================
 CHANNEL_MAP = {
-    # 央视
     "CCTV1": ["CCTV1", "CCTV-1", "央视综合", "中央一套", "CCTV1综合"],
     "CCTV2": ["CCTV2", "CCTV-2", "央视财经", "中央二套", "CCTV2财经"],
     "CCTV3": ["CCTV3", "CCTV-3", "央视综艺", "中央三套", "CCTV3综艺"],
@@ -37,7 +33,6 @@ CHANNEL_MAP = {
     "CCTV15": ["CCTV15", "CCTV-15", "央视音乐", "中央十五套", "CCTV15音乐"],
     "CCTV16": ["CCTV16", "CCTV-16", "央视奥林匹克", "CCTV16奥林匹克"],
     "CCTV17": ["CCTV17", "CCTV-17", "央视农业农村", "CCTV17农业农村"],
-    # 卫视
     "湖南卫视": ["湖南卫视", "湖南台", "湖南HD", "HNTV"],
     "浙江卫视": ["浙江卫视", "浙江台", "浙江HD", "ZJTV"],
     "东方卫视": ["东方卫视", "上海卫视", "上海台", "上海HD", "DFTV"],
@@ -57,7 +52,7 @@ CHANNEL_MAP = {
     "辽宁卫视": ["辽宁卫视", "辽宁台", "辽宁HD", "LNTV"],
     "吉林卫视": ["吉林卫视", "吉林台", "吉林HD", "JLTV"],
     "黑龙江卫视": ["黑龙江卫视", "黑龙江台", "黑龙江HD", "HLJTV"],
-    "东南卫视": ["东南卫视", "福建卫视", "福建台", "福建HD", "FJTV"],
+    "福建卫视": ["福建卫视", "东南卫视", "福建台", "福建HD", "FJTV"],
     "广西卫视": ["广西卫视", "广西台", "广西HD", "GXTV"],
     "云南卫视": ["云南卫视", "云南台", "云南HD", "YNTV"],
     "贵州卫视": ["贵州卫视", "贵州台", "贵州HD", "GZTV"],
@@ -70,31 +65,26 @@ CHANNEL_MAP = {
     "内蒙古卫视": ["内蒙古卫视", "内蒙古台", "内蒙古HD", "NMGT"],
     "宁夏卫视": ["宁夏卫视", "宁夏台", "宁夏HD", "NXTV"],
     "青海卫视": ["青海卫视", "青海台", "青海HD", "QHTV"],
-    "三沙卫视": ["三沙卫视", "三沙台", "SSTV"],
-    "厦门卫视": ["厦门卫视", "厦门台", "XMTV"],
-    # 卡通/少儿
+    "三沙卫视": ["三沙卫视", "三沙台"],
     "金鹰卡通": ["金鹰卡通", "金鹰卡通卫视"],
     "卡酷少儿": ["卡酷少儿", "卡酷动画"],
-    "炫动卡通": ["炫动卡通"],
     "优漫卡通": ["优漫卡通"],
 }
 
 TARGET_CHANNELS = list(CHANNEL_MAP.keys())
 
+# ============================================
+# 公开源列表
+# ============================================
+SOURCES = [
+    {"name": "YueChan", "type": "m3u", "url": "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u"},
+    {"name": "YanG", "type": "m3u", "url": "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u"},
+    {"name": "fanmingming", "type": "m3u", "url": "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u"},
+    {"name": "ssili126", "type": "m3u", "url": "https://raw.githubusercontent.com/ssili126/tv/main/itvlist.m3u"},
+    {"name": "iptv-org", "type": "m3u", "url": "https://raw.githubusercontent.com/iptv-org/iptv/master/countries/cn.m3u"},
+]
 
-def fetch_url(url, timeout=15, headers=None):
-    """安全获取URL内容"""
-    default_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    if headers:
-        default_headers.update(headers)
-    req = Request(url, headers=default_headers)
-    try:
-        resp = urlopen(req, timeout=timeout)
-        return resp.read().decode("utf-8", errors="ignore")
-    except Exception as e:
-        return None
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 
 def normalize_channel_name(name):
@@ -129,7 +119,8 @@ def parse_m3u(content):
             if logo_match:
                 current_logo = logo_match.group(1)
         elif line and not line.startswith("#") and current_name:
-            entries.append((current_name, line.strip(), current_tvg, current_logo))
+            if line.startswith("http") or line.startswith("rtsp") or line.startswith("rtmp"):
+                entries.append((current_name, line.strip(), current_tvg, current_logo))
             current_name = None
             current_tvg = ""
             current_logo = ""
@@ -151,50 +142,42 @@ def parse_txt(content):
                 name, url = parts[0].strip(), parts[1].strip()
                 if url.startswith("http"):
                     entries.append((name, url, "", ""))
+        elif "://" in line and line.startswith("http"):
+            entries.append((line, line.strip(), "", ""))
     return entries
 
 
-# ============================================
-# 公开源列表（2026-03更新）
-# ============================================
-SOURCES = [
-    # 活跃的M3U源
-    {"name": "YueChan", "type": "m3u", "url": "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u"},
-    {"name": "YanG", "type": "m3u", "url": "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u"},
-    {"name": "fanmingming", "type": "m3u", "url": "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u"},
-    {"name": "ssili126", "type": "m3u", "url": "https://raw.githubusercontent.com/ssili126/tv/main/itvlist.m3u"},
-    {"name": "Guovin", "type": "m3u", "url": "https://raw.githubusercontent.com/Guovin/iptv-api/master/updates/intermediate/result.m3u"},
-    {"name": "1715173329", "type": "m3u", "url": "https://raw.githubusercontent.com/1715173329/siyuan-iptv/master/iptv.m3u"},
-    {"name": "tiantian021", "type": "m3u", "url": "https://raw.githubusercontent.com/tiantian021/iptv/main/tv.txt"},
-    {"name": "lyf2000", "type": "m3u", "url": "https://raw.githubusercontent.com/lyf2000/iptv/master/live.txt"},
-    {"name": "xinpengZ", "type": "m3u", "url": "https://raw.githubusercontent.com/xinpengZ/iptv/main/iptv.m3u"},
-    {"name": "P3TERX", "type": "m3u", "url": "https://raw.githubusercontent.com/P3TERX/iptv/main/iptv.m3u"},
-    {"name": "tailab-live", "type": "m3u", "url": "https://raw.githubusercontent.com/tailab/live/main/iptv.m3u"},
-    {"name": "iptv-org", "type": "m3u", "url": "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"},
-    {"name": "Chivalry-027", "type": "m3u", "url": "https://raw.githubusercontent.com/Chivalry-027/iptv/main/tv.m3u"},
-    {"name": "SuperZC2020", "type": "m3u", "url": "https://raw.githubusercontent.com/SuperZC2020/tv/main/iptv.txt"},
-    {"name": "tiantian021-tx", "type": "m3u", "url": "https://raw.githubusercontent.com/tiantian021/tx/main/live.txt"},
-    {"name": "live-stream", "type": "m3u", "url": "https://raw.githubusercontent.com/live-stream/live/main/live.m3u"},
-]
+async def fetch_source(session, src, semaphore):
+    """异步获取单个源"""
+    async with semaphore:
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with session.get(src["url"], timeout=timeout, headers=HEADERS) as resp:
+                if resp.status == 200:
+                    content = await resp.text(errors="ignore")
+                    if src["type"] == "m3u":
+                        entries = parse_m3u(content)
+                    else:
+                        entries = parse_txt(content)
+                    print(f"  ✅ {src['name']}: {len(entries)} 个频道")
+                    return entries
+                else:
+                    print(f"  ❌ {src['name']}: HTTP {resp.status}")
+                    return []
+        except Exception as e:
+            print(f"  ❌ {src['name']}: {str(e)[:50]}")
+            return []
 
 
-def collect_all_sources():
-    """收集所有源"""
+async def collect_all_sources_async():
+    """异步收集所有源"""
+    semaphore = asyncio.Semaphore(5)  # 并发限制
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_source(session, src, semaphore) for src in SOURCES]
+        results = await asyncio.gather(*tasks)
     all_entries = []
-    print("开始收集 IPTV 源...")
-    for src in SOURCES:
-        print(f"  收集: {src['name']}...")
-        content = fetch_url(src["url"], timeout=20)
-        if content:
-            if src["type"] == "m3u":
-                entries = parse_m3u(content)
-            else:
-                entries = parse_txt(content)
-            print(f"    → 获取 {len(entries)} 个频道")
-            all_entries.extend(entries)
-        else:
-            print(f"    → 获取失败")
-    print(f"\n总共收集到 {len(all_entries)} 个条目")
+    for entries in results:
+        all_entries.extend(entries)
     return all_entries
 
 
@@ -218,77 +201,67 @@ def match_target_channels(entries):
     return matched
 
 
-def check_stream(url, timeout=12):
-    """检查单个流是否可用，返回延迟(ms)"""
-    try:
-        if not url.startswith("http"):
-            return False, 99999
-        start = time.time()
-        # 先尝试HEAD
-        req = Request(url, headers={"User-Agent": "VLC/3.0.0"})
-        req.method = "HEAD"
+async def check_stream(session, url, semaphore):
+    """异步检查单个流"""
+    async with semaphore:
         try:
-            resp = urlopen(req, timeout=timeout)
-            latency = int((time.time() - start) * 1000)
-            # 检查返回的内容类型，确保是流
-            ct = resp.headers.get("Content-Type", "")
-            if "text/html" in ct:
-                return False, 99999
-            return True, latency
-        except:
-            # HEAD失败，尝试GET读取少量数据
             start = time.time()
-            req = Request(url, headers={
-                "User-Agent": "VLC/3.0.0",
-                "Range": "bytes=0-1024"
-            })
-            resp = urlopen(req, timeout=timeout)
-            data = resp.read(1024)
-            if len(data) < 100:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with session.get(url, timeout=timeout, headers={"User-Agent": "VLC/3.0.0"},
+                                   allow_redirects=True) as resp:
+                latency = int((time.time() - start) * 1000)
+                if resp.status == 200:
+                    # 读取少量数据确认流有效
+                    data = b""
+                    try:
+                        async for chunk in resp.content.iter_chunked(1024):
+                            data = chunk
+                            break
+                    except:
+                        pass
+                    if len(data) > 0 or resp.status == 200:
+                        return True, latency
                 return False, 99999
-            latency = int((time.time() - start) * 1000)
-            return True, latency
-    except Exception:
-        return False, 99999
+        except Exception:
+            return False, 99999
 
 
-def verify_sources_parallel(matched, max_workers=20, max_per_channel=5):
-    """并行验证源"""
+async def verify_sources_async(matched, max_per_channel=5):
+    """异步验证所有源"""
     verified = {}
-    total = sum(min(len(v), max_per_channel) for v in matched.values())
-    print(f"开始验证 {total} 个源（每个频道最多 {max_per_channel} 个）...")
+    semaphore = asyncio.Semaphore(50)  # 高并发验证
 
     tasks = []
+    task_meta = {}
     for channel_name, sources in matched.items():
         for url, orig_name, tvg_id, logo in sources[:max_per_channel]:
-            tasks.append((channel_name, url, orig_name, tvg_id, logo))
+            tasks.append((channel_name, url, tvg_id, logo))
+            task_meta[(channel_name, url)] = (orig_name, tvg_id, logo)
 
-    completed = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {}
-        for task in tasks:
-            future = executor.submit(check_stream, task[1])
-            future_map[future] = task
+    total = len(tasks)
+    print(f"开始验证 {total} 个源（每个频道最多 {max_per_channel} 个，50并发）...")
 
-        for future in as_completed(future_map):
-            completed += 1
-            task = future_map[future]
-            channel_name, url, orig_name, tvg_id, logo = task
-            is_ok, latency = future.result()
+    async with aiohttp.ClientSession() as session:
+        async def verify_one(channel_name, url, tvg_id, logo):
+            is_ok, latency = await check_stream(session, url, semaphore)
+            return channel_name, url, is_ok, latency, tvg_id, logo
 
-            if completed % 20 == 0 or is_ok:
-                status = "✅" if is_ok else "❌"
-                print(f"  [{completed}/{total}] {status} {channel_name} ({latency}ms)")
+        coros = [verify_one(ch, url, tvg, logo) for ch, url, tvg, logo in tasks]
+        results = await asyncio.gather(*coros)
 
-            if is_ok:
-                if channel_name not in verified:
-                    verified[channel_name] = []
-                verified[channel_name].append((url, latency, tvg_id, logo))
+    ok_count = 0
+    for channel_name, url, is_ok, latency, tvg_id, logo in results:
+        if is_ok:
+            ok_count += 1
+            if channel_name not in verified:
+                verified[channel_name] = []
+            verified[channel_name].append((url, latency, tvg_id, logo))
 
+    # 按延迟排序
     for ch in verified:
         verified[ch].sort(key=lambda x: x[1])
 
-    print(f"\n验证完成: {len(verified)}/{len(matched)} 个频道有可用源")
+    print(f"验证完成: {len(verified)}/{len(matched)} 个频道有可用源, {ok_count} 个源可用")
     return verified
 
 
@@ -296,35 +269,21 @@ def generate_m3u(verified):
     """生成M3U文件"""
     lines = ['#EXTM3U x-tvg-url="https://live.fanmingming.com/e.xml"']
 
-    cctv_order = ["CCTV1", "CCTV2", "CCTV3", "CCTV4", "CCTV5", "CCTV5+", "CCTV6", "CCTV7", "CCTV8",
-                  "CCTV9", "CCTV10", "CCTV11", "CCTV12", "CCTV13", "CCTV14", "CCTV15", "CCTV16", "CCTV17"]
-    weishi = [ch for ch in verified if ch not in cctv_order and ch not in ["金鹰卡通", "卡酷少儿", "炫动卡通", "优漫卡通"]]
-    weishi.sort()
-    qita = ["金鹰卡通", "卡酷少儿", "炫动卡通", "优漫卡通"]
+    cctv_order = [f"CCTV{i}" for i in range(1, 18)] + ["CCTV5+"]
+    weishi = sorted([ch for ch in verified if ch not in cctv_order and "卡通" not in ch and "卡酷" not in ch])
+    qita = [ch for ch in verified if ch in ["金鹰卡通", "卡酷少儿", "优漫卡通"]]
 
-    for ch in cctv_order:
-        if ch in verified:
-            url, latency, tvg_id, logo = verified[ch][0]
-            logo_attr = f' tvg-logo="{logo}"' if logo else ""
-            tvg_attr = f' tvg-id="{tvg_id}"' if tvg_id else ""
-            lines.append(f'#EXTINF:-1 group-title="央视"{tvg_attr}{logo_attr},{ch}')
-            lines.append(url)
-
-    for ch in weishi:
-        if ch in verified:
-            url, latency, tvg_id, logo = verified[ch][0]
-            logo_attr = f' tvg-logo="{logo}"' if logo else ""
-            tvg_attr = f' tvg-id="{tvg_id}"' if tvg_id else ""
-            lines.append(f'#EXTINF:-1 group-title="卫视"{tvg_attr}{logo_attr},{ch}')
-            lines.append(url)
-
-    for ch in qita:
-        if ch in verified:
-            url, latency, tvg_id, logo = verified[ch][0]
-            logo_attr = f' tvg-logo="{logo}"' if logo else ""
-            tvg_attr = f' tvg-id="{tvg_id}"' if tvg_id else ""
-            lines.append(f'#EXTINF:-1 group-title="少儿/卡通"{tvg_attr}{logo_attr},{ch}')
-            lines.append(url)
+    for group_title, channels in [("央视", cctv_order), ("卫视", weishi), ("少儿", qita)]:
+        for ch in channels:
+            if ch in verified:
+                url, latency, tvg_id, logo = verified[ch][0]
+                attrs = ""
+                if tvg_id:
+                    attrs += f' tvg-id="{tvg_id}"'
+                if logo:
+                    attrs += f' tvg-logo="{logo}"'
+                lines.append(f'#EXTINF:-1 group-title="{group_title}"{attrs},{ch}')
+                lines.append(url)
 
     return "\n".join(lines)
 
@@ -347,18 +306,32 @@ def generate_stats(verified, matched):
     return stats
 
 
-def main():
+async def main_async():
     output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "output")
     os.makedirs(output_dir, exist_ok=True)
 
-    # 1. 收集源
-    all_entries = collect_all_sources()
+    print("=== IPTV 聚合源收集器 v2 ===\n")
+
+    # 1. 异步收集源
+    print("📡 步骤1: 收集源...")
+    all_entries = await collect_all_sources_async()
+    print(f"\n总共收集到 {len(all_entries)} 个条目\n")
+
+    if not all_entries:
+        print("❌ 没有收集到任何源，退出")
+        return 1
 
     # 2. 匹配目标频道
+    print("🔍 步骤2: 匹配目标频道...")
     matched = match_target_channels(all_entries)
 
-    # 3. 验证源
-    verified = verify_sources_parallel(matched)
+    if not matched:
+        print("❌ 没有匹配到任何目标频道，退出")
+        return 1
+
+    # 3. 异步验证源
+    print("\n✅ 步骤3: 验证源...")
+    verified = await verify_sources_async(matched)
 
     # 4. 生成M3U
     m3u_content = generate_m3u(verified)
@@ -372,7 +345,6 @@ def main():
     stats_path = os.path.join(output_dir, "stats.json")
     with open(stats_path, "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
-    print(f"📊 统计信息: {stats_path}")
 
     # 6. 打印摘要
     print(f"\n{'='*40}")
@@ -382,12 +354,14 @@ def main():
     print(f"可用频道: {len(verified)} 个")
     print(f"缺失频道: {len(stats['channels_missing'])} 个")
     if stats["channels_missing"]:
-        print(f"缺失列表: {', '.join(stats['channels_missing'][:10])}{'...' if len(stats['channels_missing'])>10 else ''}")
+        print(f"缺失列表: {', '.join(stats['channels_missing'][:10])}...")
     print(f"{'='*40}")
 
-    # 总是返回0（成功），即使部分频道不可用
-    # 这样workflow会持续更新，不被标记为失败
     return 0
+
+
+def main():
+    return asyncio.run(main_async())
 
 
 if __name__ == "__main__":

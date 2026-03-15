@@ -11,7 +11,7 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     
     steps:
       - uses: actions/checkout@v4
@@ -21,14 +21,11 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install dependencies
-        run: |
-          pip install requests
-      
       - name: Collect and verify IPTV sources
         run: |
           python scripts/collect_sources.py
-        timeout-minutes: 10
+        timeout-minutes: 15
+        continue-on-error: false
       
       - name: Update timestamp
         run: |

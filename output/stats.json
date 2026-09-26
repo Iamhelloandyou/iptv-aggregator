@@ -1,7 +1,7 @@
 {
-  "timestamp": "2026-09-26 12:46:22",
+  "timestamp": "2026-09-26 16:55:43",
   "total_sources_collected": 51,
-  "channels_available": 1,
+  "channels_available": 0,
   "channels_target": 54,
   "channels_missing": [
     "CCTV1",
@@ -45,6 +45,7 @@
     "广西卫视",
     "云南卫视",
     "贵州卫视",
+    "山西卫视",
     "陕西卫视",
     "甘肃卫视",
     "海南卫视",
@@ -58,10 +59,5 @@
     "卡酷少儿",
     "优漫卡通"
   ],
-  "channel_details": {
-    "山西卫视": {
-      "best_latency_ms": 402,
-      "total_working_sources": 1
-    }
-  }
+  "channel_details": {}
 }
